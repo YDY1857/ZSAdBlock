@@ -81,22 +81,49 @@ static void ZSSwizzle(Class cls, SEL sel, IMP newImp, IMP *origStore) {
 // ⚠️ 故意不包含任何 load / request / fetch，遵守“放行加载”原则。
 static NSArray<NSString *> *ZSDisplaySelectors(void) {
     return @[
-        @"show", @"showAd", @"showAdView", @"showSplashAd", @"showSplashView",
+        @"show", @"showAd", @"showAd:", @"showAd:options:",
+        @"showAdView", @"showSplashAd", @"showSplashView", @"showE8InWindow",
         @"presentSplashAd", @"displaySplashAd", @"present", @"presentAd",
         @"showInWindow:", @"showInKeyWindow", @"showInKeyWindow:",
         @"showSplashViewInRootViewController:",
+        @"showSplashViewInRootViewController:bottomView:",
+        @"showSplashViewInWindow:", @"showSplashViewInWindow:bottomView:",
+        @"showSplashAdInWindow:parameter:",
         @"showAdInWindow:withRootController:",
-        @"showAdInWindow:",
+        @"showAdInWindow:", @"showAdInWindow:withBottomView:",
+        @"showAdInWindow:withBottomView:skipView:", @"showAdInWindow:title:desc:",
         @"showSplashViewInRootViewController:withCustomView:",
         @"presentFromRootViewController:",
+        @"presentFromViewController:complete:",
         @"showFromRootViewController:",
         @"showAdFromRootViewController:",
+        @"showAdFromRootViewController:options:",
+        @"showAdFromRootViewController:parameter:",
+        @"showAdInRootViewController:",
         @"presentAdFromRootViewController:",
+        @"presentFullScreenAdFromRootViewController:",
         @"showRewardVideoAdFromRootViewController:",
+        @"showRewardedVideoAdWithRootViewController:",
+        @"showRewardedVideoViewInRootViewController:",
         @"showFullScreenVideoAdFromRootViewController:",
+        @"showInterstitialAdWithRootViewController:",
+        @"showInterstitialViewInRootViewController:",
+        @"showAdsFromRootViewController:", @"showAdsFromViewController:",
+        @"showAdsWithAdView:", @"showAdsWithWindow:",
         @"showInViewController:", @"showInView:", @"showInView:animated:",
-        @"presentInViewController:", @"presentViewController:animated:completion:",
+        @"presentInViewController:",
     ];
+}
+
+static BOOL ZSLooksLikeAdClassName(NSString *name) {
+    NSString *low = name.lowercaseString;
+    BOOL adType = [low containsString:@"splash"] || [low containsString:@"reward"] ||
+                  [low containsString:@"interstit"] || [low containsString:@"nativead"];
+    BOOL adSDK = [low containsString:@"windmill"] || [low containsString:@"sigmob"] ||
+                 [low containsString:@"beizi"] || [low containsString:@"gdt"] ||
+                 [low containsString:@"adscope"] || [low containsString:@"amps"];
+    return adType || [low containsString:@"advert"] ||
+           (adSDK && ([low containsString:@"ad"] || [low containsString:@"window"]));
 }
 
 // 已知广告类（WindMill / Sigmob / GDT）—— 逐个把上面的展示方法置空。
@@ -121,16 +148,44 @@ static NSArray<NSString *> *ZSAdClassNames(void) {
     ];
 }
 
-static void ZSNukeAllDisplayMethods(void) {
-    NSArray *sels = ZSDisplaySelectors();
-    for (NSString *cn in ZSAdClassNames()) {
-        Class cls = NSClassFromString(cn);
-        if (!cls) continue;
-        for (NSString *sn in sels) {
-            SEL sel = NSSelectorFromString(sn);
-            if (class_getInstanceMethod(cls, sel)) ZSNukeMethod(cls, sel);
-        }
+static void ZSNukeClassDisplayMethods(Class cls, NSArray<NSString *> *sels,
+                                      NSMutableSet<NSString *> *done) {
+    if (!cls) return;
+    NSString *className = NSStringFromClass(cls);
+    for (NSString *sn in sels) {
+        SEL sel = NSSelectorFromString(sn);
+        if (!class_getInstanceMethod(cls, sel)) continue;
+        NSString *key = [NSString stringWithFormat:@"%@|%@", className, sn];
+        if ([done containsObject:key]) continue;
+        ZSNukeMethod(cls, sel);
+        [done addObject:key];
     }
+}
+
+static void ZSNukeAllDisplayMethods(void) {
+    static NSMutableSet<NSString *> *done = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ done = [NSMutableSet set]; });
+
+    NSArray<NSString *> *sels = ZSDisplaySelectors();
+    for (NSString *cn in ZSAdClassNames()) {
+        ZSNukeClassDisplayMethods(NSClassFromString(cn), sels, done);
+    }
+
+    // Swift 广告类的真实名称带模块前缀；直接扫描运行时，避免继续维护易漏的硬编码名单。
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    if (!classes) return;
+    NSMutableArray<NSString *> *hits = [NSMutableArray array];
+    for (unsigned int i = 0; i < count; i++) {
+        NSString *name = NSStringFromClass(classes[i]);
+        if (!ZSLooksLikeAdClassName(name)) continue;
+        [hits addObject:name];
+        ZSNukeClassDisplayMethods(classes[i], sels, done);
+    }
+    free(classes);
+    ZSLog(@"[class-scan] %lu ad-like classes: %@", (unsigned long)hits.count,
+          [hits componentsJoinedByString:@", "]);
 }
 
 #pragma mark - 第二层兜底：UIWindow（拦截以独立窗口弹出的开屏广告）
@@ -139,9 +194,8 @@ static IMP orig_makeKeyAndVisible = NULL;
 static IMP orig_setHidden = NULL;
 
 static BOOL ZSIsAdWindow(UIWindow *w) {
-    if (w.windowLevel <= UIWindowLevelNormal) return NO;   // 只管高于普通层的浮层
     NSString *cls = NSStringFromClass([w class]);
-    return ([cls containsString:@"Splash"] || [cls containsString:@"Ad"]);
+    return ZSLooksLikeAdClassName(cls);
 }
 
 static void new_makeKeyAndVisible(UIWindow *self, SEL _cmd) {
@@ -186,7 +240,7 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
     NSString *name = NSStringFromClass([self class]);
 
     // 1) 精确命中：已知广告视图，直接移除
-    if ([ZSKnownAdViewClasses() containsObject:name]) {
+    if ([ZSKnownAdViewClasses() containsObject:name] || ZSLooksLikeAdClassName(name)) {
         ZSLog(@"remove known ad view: %@", name);
         [self removeFromSuperview];
         return;
@@ -206,30 +260,6 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
     }
 }
 
-#pragma mark - 启动期广告类名 dump（便于真机复现后精修）
-
-static void ZSDumpAdClasses(void) {
-    unsigned int count = 0;
-    Class *classes = objc_copyClassList(&count);
-    if (!classes) return;
-    NSMutableArray *hits = [NSMutableArray array];
-    for (unsigned int i = 0; i < count; i++) {
-        const char *n = class_getName(classes[i]);
-        if (!n) continue;
-        NSString *name = [NSString stringWithUTF8String:n];
-        NSString *low = name.lowercaseString;
-        if ([low containsString:@"splash"] || [low containsString:@"reward"] ||
-            [low containsString:@"interstit"] || [low containsString:@"nativead"] ||
-            ([low containsString:@"ad"] && ([low hasPrefix:@"wind"] || [low hasPrefix:@"gdt"] ||
-                                            [low hasPrefix:@"sigmob"] || [low hasPrefix:@"beizi"]))) {
-            [hits addObject:name];
-        }
-    }
-    free(classes);
-    ZSLog(@"[class-dump] %lu ad-like classes: %@", (unsigned long)hits.count,
-          [hits componentsJoinedByString:@", "]);
-}
-
 #pragma mark - 安装
 
 __attribute__((constructor))
@@ -239,11 +269,10 @@ static void ZSAdBlockInit(void) {
     gTimebase = (double)tb.numer / (double)tb.denom;
     gStartAbs = mach_absolute_time();
 
-    ZSLog(@"==== ZSAdBlock loaded (block=%d) ====", gBlock);
+    ZSLog(@"==== ZSAdBlock v2 loaded (block=%d) ====", gBlock);
 
     // 展示方法交换尽量早做；类可能尚未加载，故延时再补一轮
     ZSNukeAllDisplayMethods();
-    ZSDumpAdClasses();
 
     // UIWindow / UIView 两层兜底
     ZSSwizzle([UIWindow class], @selector(makeKeyAndVisible),
@@ -257,6 +286,5 @@ static void ZSAdBlockInit(void) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         ZSNukeAllDisplayMethods();
-        ZSDumpAdClasses();
     });
 }
