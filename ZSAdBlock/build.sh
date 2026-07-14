@@ -17,7 +17,7 @@ echo ">> 编译 $OUT ..."
   -miphoneos-version-min=12.0 \
   -fobjc-arc \
   -fblocks \
-  -framework UIKit -framework Foundation -framework QuartzCore \
+  -framework UIKit -framework Foundation -framework CoreGraphics \
   -install_name "@executable_path/ZSAdBlock.dylib" \
   -o "$OUT" ZSAdBlock.m
 
