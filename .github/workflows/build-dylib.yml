@@ -1,0 +1,28 @@
+name: Build ZSAdBlock.dylib
+
+# 在 macOS runner（云端）编译 iOS 去广告 dylib。
+# GitHub Actions 只认仓库根目录的 .github/workflows/，本文件已放在此处。
+# 用法：把本仓库推到 GitHub，Actions 自动构建，在运行页 Artifacts 下载 dylib。
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dylib
+        working-directory: ZSAdBlock
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZSAdBlock-dylib
+          path: ZSAdBlock/ZSAdBlock.dylib
+          if-no-files-found: error
