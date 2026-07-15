@@ -14,6 +14,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 #pragma mark - 开关
 
@@ -52,7 +53,90 @@ static BOOL ZSLooksLikeAdClassName(NSString *name) {
            [low containsString:@"beizi"] || [low containsString:@"gdt"] ||
            [low containsString:@"adscope"] || [low containsString:@"amps"] ||
            [low hasPrefix:@"agl"] || [low containsString:@".agl"] ||
-           [low hasPrefix:@"bzi"] || [low containsString:@".bzi"];
+           [low hasPrefix:@"bzi"] || [low containsString:@".bzi"] ||
+           [low hasPrefix:@"smmotion"] || [low hasPrefix:@"windmotion"];
+}
+
+static BOOL ZSLooksLikeOverlayComponent(NSString *name) {
+    NSString *low = name.lowercaseString;
+    return [low containsString:@"splash"] || [low containsString:@"interstit"] ||
+           [low containsString:@"shake"] || [low containsString:@"skip"] ||
+           [low containsString:@"zoomout"] || [low containsString:@"customwindow"];
+}
+
+static void ZSNoop(id self, SEL _cmd) { (void)self; (void)_cmd; }
+static BOOL ZSReturnNo(id self, SEL _cmd) { (void)self; (void)_cmd; return NO; }
+
+static void ZSDisableShakeMethods(void) {
+    NSArray<NSString *> *voidSelectors = @[
+        @"startMotionServices", @"startShake", @"startShakeServices",
+        @"startDeviceMotionServe"
+    ];
+    NSArray<NSString *> *boolSelectors = @[@"canUseMotionManager", @"isCanUseMotionManager"];
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    if (!classes) return;
+    for (unsigned int i = 0; i < count; i++) {
+        Class cls = classes[i];
+        if (!ZSLooksLikeAdClassName(NSStringFromClass(cls))) continue;
+        for (NSString *name in voidSelectors) {
+            ZSSwizzle(cls, NSSelectorFromString(name), (IMP)ZSNoop, NULL);
+        }
+        for (NSString *name in boolSelectors) {
+            ZSSwizzle(cls, NSSelectorFromString(name), (IMP)ZSReturnNo, NULL);
+        }
+    }
+    free(classes);
+}
+
+static BOOL ZSTryFinishAd(id object) {
+    if (!object) return NO;
+    if ([object isKindOfClass:[UIControl class]] && [(UIControl *)object allTargets].count > 0) {
+        [(UIControl *)object sendActionsForControlEvents:UIControlEventTouchUpInside];
+        ZSLog(@"trigger ad control: %@", NSStringFromClass([object class]));
+        return YES;
+    }
+    NSArray<NSString *> *selectors = @[
+        @"tapSkipEvent", @"skipAd", @"skip", @"closeAd", @"closeSelf", @"close",
+        @"removeSplashAd", @"removeSplashView", @"removeUnifiedSplash",
+        @"BeiZi_removeSplashAd", @"BeiZi_removeUnifiedSplash",
+        @"beizi_skipViewCloseDidClicked", @"BeiZi_didClickClose", @"clickCloseAd"
+    ];
+    for (NSString *name in selectors) {
+        SEL sel = NSSelectorFromString(name);
+        if (![object respondsToSelector:sel]) continue;
+        ((void(*)(id, SEL))objc_msgSend)(object, sel);
+        ZSLog(@"invoke ad finish: -[%@ %@]", NSStringFromClass([object class]), name);
+        return YES;
+    }
+    return NO;
+}
+
+static UIView *ZSOverlayRootForView(UIView *view) {
+    UIWindow *window = view.window;
+    if (!window) return view;
+    CGFloat windowArea = window.bounds.size.width * window.bounds.size.height;
+    for (UIView *candidate = view; candidate && candidate != window; candidate = candidate.superview) {
+        CGRect frame = [candidate convertRect:candidate.bounds toView:window];
+        CGFloat area = frame.size.width * frame.size.height;
+        NSString *name = NSStringFromClass([candidate class]);
+        if (windowArea > 0 && area >= windowArea * 0.6 &&
+            ![name.lowercaseString containsString:@"flutter"]) {
+            return candidate;
+        }
+    }
+    return view;
+}
+
+static void ZSFinishAndHideOverlay(UIView *view) {
+    for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
+        NSString *name = NSStringFromClass([responder class]);
+        if ((responder == view || ZSLooksLikeAdClassName(name)) && ZSTryFinishAd(responder)) break;
+    }
+    UIView *root = ZSOverlayRootForView(view);
+    ZSLog(@"hide ad overlay: %@", NSStringFromClass([root class]));
+    root.userInteractionEnabled = NO;
+    root.hidden = YES;
 }
 
 #pragma mark - UIView 广告视图隐藏
@@ -79,11 +163,15 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
     if (!gBlock || !self.window) return;
     NSString *name = NSStringFromClass([self class]);
 
-    // 只隐藏明确属于广告 SDK 的视图；不拦 show，让 SDK 正常触发关闭回调。
+    // 广告 SDK 生命周期照常运行；开屏/摇一摇组件触发跳过，并连同蒙层一起隐藏。
     if ([ZSKnownAdViewClasses() containsObject:name] || ZSLooksLikeAdClassName(name)) {
-        ZSLog(@"hide ad view: %@", name);
-        self.userInteractionEnabled = NO;
-        self.hidden = YES;
+        if (ZSLooksLikeOverlayComponent(name)) {
+            dispatch_async(dispatch_get_main_queue(), ^{ ZSFinishAndHideOverlay(self); });
+        } else {
+            ZSLog(@"hide ad view: %@", name);
+            self.userInteractionEnabled = NO;
+            self.hidden = YES;
+        }
     }
 }
 
@@ -91,7 +179,8 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
 
 __attribute__((constructor))
 static void ZSAdBlockInit(void) {
-    ZSLog(@"==== ZSAdBlock v4 loaded (block=%d) ====", gBlock);
+    ZSLog(@"==== ZSAdBlock v5 loaded (block=%d) ====", gBlock);
+    ZSDisableShakeMethods();
     ZSSwizzle([UIView class], @selector(didMoveToWindow),
               (IMP)new_didMoveToWindow, &orig_didMoveToWindow);
 }
