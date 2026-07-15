@@ -112,31 +112,14 @@ static BOOL ZSTryFinishAd(id object) {
     return NO;
 }
 
-static UIView *ZSOverlayRootForView(UIView *view) {
-    UIWindow *window = view.window;
-    if (!window) return view;
-    CGFloat windowArea = window.bounds.size.width * window.bounds.size.height;
-    for (UIView *candidate = view; candidate && candidate != window; candidate = candidate.superview) {
-        CGRect frame = [candidate convertRect:candidate.bounds toView:window];
-        CGFloat area = frame.size.width * frame.size.height;
-        NSString *name = NSStringFromClass([candidate class]);
-        if (windowArea > 0 && area >= windowArea * 0.6 &&
-            ![name.lowercaseString containsString:@"flutter"]) {
-            return candidate;
-        }
-    }
-    return view;
-}
-
 static void ZSFinishAndHideOverlay(UIView *view) {
     for (UIResponder *responder = view; responder; responder = responder.nextResponder) {
         NSString *name = NSStringFromClass([responder class]);
         if ((responder == view || ZSLooksLikeAdClassName(name)) && ZSTryFinishAd(responder)) break;
     }
-    UIView *root = ZSOverlayRootForView(view);
-    ZSLog(@"hide ad overlay: %@", NSStringFromClass([root class]));
-    root.userInteractionEnabled = NO;
-    root.hidden = YES;
+    ZSLog(@"hide ad component: %@", NSStringFromClass([view class]));
+    view.userInteractionEnabled = NO;
+    view.hidden = YES;
 }
 
 #pragma mark - UIView 广告视图隐藏
@@ -163,7 +146,7 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
     if (!gBlock || !self.window) return;
     NSString *name = NSStringFromClass([self class]);
 
-    // 广告 SDK 生命周期照常运行；开屏/摇一摇组件触发跳过，并连同蒙层一起隐藏。
+    // 广告 SDK 生命周期照常运行；开屏/摇一摇组件触发跳过，只隐藏 SDK 自身视图。
     if ([ZSKnownAdViewClasses() containsObject:name] || ZSLooksLikeAdClassName(name)) {
         if (ZSLooksLikeOverlayComponent(name)) {
             dispatch_async(dispatch_get_main_queue(), ^{ ZSFinishAndHideOverlay(self); });
@@ -179,7 +162,7 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
 
 __attribute__((constructor))
 static void ZSAdBlockInit(void) {
-    ZSLog(@"==== ZSAdBlock v5 loaded (block=%d) ====", gBlock);
+    ZSLog(@"==== ZSAdBlock v6 loaded (block=%d) ====", gBlock);
     ZSDisableShakeMethods();
     ZSSwizzle([UIView class], @selector(didMoveToWindow),
               (IMP)new_didMoveToWindow, &orig_didMoveToWindow);
