@@ -158,12 +158,133 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
     }
 }
 
+#pragma mark - 变身状态诊断
+
+static NSString * const ZSDiagnosticBaselineKey = @"ZS_DIAG_DEFAULTS_BASELINE_V1";
+
+static NSDictionary *ZSCleanDefaultsSnapshot(void) {
+    NSDictionary *all = NSUserDefaults.standardUserDefaults.dictionaryRepresentation;
+    NSMutableDictionary *clean = [NSMutableDictionary dictionary];
+    [all enumerateKeysAndObjectsUsingBlock:^(id rawKey, id value, BOOL *stop) {
+        (void)stop;
+        NSString *key = [rawKey isKindOfClass:[NSString class]] ? rawKey : [rawKey description];
+        if (![key hasPrefix:@"ZS_DIAG_"] && value) clean[key] = value;
+    }];
+    return clean;
+}
+
+static BOOL ZSIsSensitiveKey(NSString *key) {
+    NSString *low = key.lowercaseString;
+    for (NSString *word in @[@"token", @"password", @"passwd", @"secret", @"auth",
+                             @"cookie", @"session", @"credential", @"deviceid", @"userid"]) {
+        if ([low containsString:word]) return YES;
+    }
+    return NO;
+}
+
+static NSString *ZSValueSummary(NSString *key, id value) {
+    if (!value) return @"<不存在>";
+    if (ZSIsSensitiveKey(key)) return @"<已打码>";
+    if ([value isKindOfClass:[NSString class]]) {
+        NSString *text = value;
+        return text.length > 80 ? [[text substringToIndex:80] stringByAppendingString:@"…"] : text;
+    }
+    if ([value isKindOfClass:[NSNumber class]] || [value isKindOfClass:[NSDate class]]) {
+        return [value description];
+    }
+    if ([value isKindOfClass:[NSArray class]]) {
+        return [NSString stringWithFormat:@"<数组 %lu 项>", (unsigned long)[value count]];
+    }
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        return [NSString stringWithFormat:@"<字典 %lu 项>", (unsigned long)[value count]];
+    }
+    if ([value isKindOfClass:[NSData class]]) {
+        return [NSString stringWithFormat:@"<数据 %lu 字节>", (unsigned long)[value length]];
+    }
+    return NSStringFromClass([value class]);
+}
+
+static UIViewController *ZSTopViewController(void) {
+    UIWindow *window = nil;
+    for (UIWindow *candidate in UIApplication.sharedApplication.windows) {
+        if (candidate.isKeyWindow) { window = candidate; break; }
+    }
+    if (!window) window = UIApplication.sharedApplication.windows.firstObject;
+    UIViewController *top = window.rootViewController;
+    while (top) {
+        if (top.presentedViewController) {
+            top = top.presentedViewController;
+        } else if ([top isKindOfClass:[UINavigationController class]]) {
+            top = ((UINavigationController *)top).visibleViewController;
+        } else if ([top isKindOfClass:[UITabBarController class]]) {
+            top = ((UITabBarController *)top).selectedViewController;
+        } else {
+            break;
+        }
+    }
+    return top;
+}
+
+static void ZSShowDiagnosticAlert(NSString *title, NSString *message, NSString *copyText) {
+    UIViewController *top = ZSTopViewController();
+    if (!top) return;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    if (copyText.length) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"复制结果"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            UIPasteboard.generalPasteboard.string = copyText;
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleCancel handler:nil]];
+    [top presentViewController:alert animated:YES completion:nil];
+}
+
+static void ZSRunSwitchDiagnostic(void) {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    NSDictionary *current = ZSCleanDefaultsSnapshot();
+    NSDictionary *baseline = [defaults dictionaryForKey:ZSDiagnosticBaselineKey];
+    if (!baseline) {
+        [defaults setObject:current forKey:ZSDiagnosticBaselineKey];
+        [defaults synchronize];
+        ZSShowDiagnosticAlert(@"诊断基准已保存",
+                              @"现在输入变身口令，杀掉 App 后台（不要卸载），然后重新打开。",
+                              nil);
+        ZSLog(@"diagnostic baseline saved: %lu keys", (unsigned long)current.count);
+        return;
+    }
+
+    NSMutableSet<NSString *> *keys = [NSMutableSet setWithArray:baseline.allKeys];
+    [keys addObjectsFromArray:current.allKeys];
+    NSMutableArray<NSString *> *changes = [NSMutableArray array];
+    for (NSString *key in [keys.allObjects sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)]) {
+        id before = baseline[key];
+        id after = current[key];
+        if ((before == after) || [before isEqual:after]) continue;
+        [changes addObject:[NSString stringWithFormat:@"%@\n  %@ → %@", key,
+                            ZSValueSummary(key, before), ZSValueSummary(key, after)]];
+    }
+
+    NSString *report = changes.count ? [changes componentsJoinedByString:@"\n"] : @"未发现 NSUserDefaults 变化";
+    NSUInteger visibleCount = MIN((NSUInteger)12, changes.count);
+    NSString *visible = changes.count ? [[changes subarrayWithRange:NSMakeRange(0, visibleCount)] componentsJoinedByString:@"\n"] : report;
+    if (changes.count > visibleCount) {
+        visible = [visible stringByAppendingFormat:@"\n……另有 %lu 项，请点“复制结果”", (unsigned long)(changes.count - visibleCount)];
+    }
+    ZSShowDiagnosticAlert(@"变身状态诊断结果", visible, report);
+    ZSLog(@"diagnostic changes (%lu): %@", (unsigned long)changes.count, report);
+}
+
 #pragma mark - 安装
 
 __attribute__((constructor))
 static void ZSAdBlockInit(void) {
-    ZSLog(@"==== ZSAdBlock v6 loaded (block=%d) ====", gBlock);
+    ZSLog(@"==== ZSAdBlock v7 diagnostic loaded (block=%d) ====", gBlock);
     ZSDisableShakeMethods();
     ZSSwizzle([UIView class], @selector(didMoveToWindow),
               (IMP)new_didMoveToWindow, &orig_didMoveToWindow);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(7 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ ZSRunSwitchDiagnostic(); });
 }
