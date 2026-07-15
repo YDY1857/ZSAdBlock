@@ -48,13 +48,11 @@ static void ZSSwizzle(Class cls, SEL sel, IMP newImp, IMP *origStore) {
 
 static BOOL ZSLooksLikeAdClassName(NSString *name) {
     NSString *low = name.lowercaseString;
-    BOOL adType = [low containsString:@"splash"] || [low containsString:@"reward"] ||
-                  [low containsString:@"interstit"] || [low containsString:@"nativead"] ||
-                  [low containsString:@"banner"];
-    BOOL adSDK = [low containsString:@"windmill"] || [low containsString:@"sigmob"] ||
-                 [low containsString:@"beizi"] || [low containsString:@"gdt"] ||
-                 [low containsString:@"adscope"] || [low containsString:@"amps"];
-    return adSDK && (adType || [low containsString:@"ad"]);
+    return [low containsString:@"windmill"] || [low containsString:@"sigmob"] ||
+           [low containsString:@"beizi"] || [low containsString:@"gdt"] ||
+           [low containsString:@"adscope"] || [low containsString:@"amps"] ||
+           [low hasPrefix:@"agl"] || [low containsString:@".agl"] ||
+           [low hasPrefix:@"bzi"] || [low containsString:@".bzi"];
 }
 
 #pragma mark - UIView 广告视图隐藏
@@ -93,7 +91,7 @@ static void new_didMoveToWindow(UIView *self, SEL _cmd) {
 
 __attribute__((constructor))
 static void ZSAdBlockInit(void) {
-    ZSLog(@"==== ZSAdBlock v3 loaded (block=%d) ====", gBlock);
+    ZSLog(@"==== ZSAdBlock v4 loaded (block=%d) ====", gBlock);
     ZSSwizzle([UIView class], @selector(didMoveToWindow),
               (IMP)new_didMoveToWindow, &orig_didMoveToWindow);
 }
