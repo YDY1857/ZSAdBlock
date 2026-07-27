@@ -1,4 +1,4 @@
-name: Build TransformDiagnostic.dylib
+name: Build ZSAdBlock.dylib
 
 on:
   push:
@@ -9,13 +9,13 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - name: Build diagnostic dylib
-        working-directory: TransformDiagnostic
+      - name: Build dylib
+        working-directory: ZSAdBlock
         run: |
           chmod +x build.sh
           ./build.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: TransformDiagnostic-dylib
-          path: TransformDiagnostic/TransformDiagnostic.dylib
+          name: ZSAdBlock-dylib
+          path: ZSAdBlock/ZSAdBlock.dylib
           if-no-files-found: error
